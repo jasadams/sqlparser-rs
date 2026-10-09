@@ -1050,6 +1050,56 @@ pub enum Expr {
     /// [Databricks](https://docs.databricks.com/en/sql/language-manual/sql-ref-lambda-functions.html)
     /// [DuckDb](https://duckdb.org/docs/sql/functions/lambda.html)
     Lambda(LambdaFunction),
+    /// ANSI SQL/JSON `JSON_EXISTS` predicate, e.g. `JSON_EXISTS(doc, '$.path')`.
+    ///
+    /// Only parsed when [`Dialect::supports_sql_json_functions`] is enabled
+    /// (currently only the Arroyo dialect); other dialects parse these
+    /// functions as ordinary [`Expr::Function`] calls.
+    ///
+    /// [`Dialect::supports_sql_json_functions`]: crate::dialect::Dialect::supports_sql_json_functions
+    JsonExists {
+        /// The document expression being queried.
+        doc: Box<Expr>,
+        /// The SQL/JSON path as a single-quoted string literal.
+        path: String,
+    },
+    /// ANSI SQL/JSON `JSON_VALUE` scalar extraction, e.g.
+    /// `JSON_VALUE(doc, '$.path' RETURNING VARCHAR)`.
+    ///
+    /// Only parsed when [`Dialect::supports_sql_json_functions`] is enabled.
+    ///
+    /// [`Dialect::supports_sql_json_functions`]: crate::dialect::Dialect::supports_sql_json_functions
+    JsonValue {
+        /// The document expression being queried.
+        doc: Box<Expr>,
+        /// The SQL/JSON path as a single-quoted string literal.
+        path: String,
+        /// The optional `RETURNING <type>` clause; the parser restricts this
+        /// to `VARCHAR`, `BOOLEAN` and `DOUBLE PRECISION`.
+        returning: Option<DataType>,
+    },
+    /// ANSI SQL/JSON `JSON_QUERY` construction, e.g.
+    /// `JSON_QUERY(doc, '$.path')`.
+    ///
+    /// Only parsed when [`Dialect::supports_sql_json_functions`] is enabled.
+    ///
+    /// [`Dialect::supports_sql_json_functions`]: crate::dialect::Dialect::supports_sql_json_functions
+    JsonQuery {
+        /// The document expression being queried.
+        doc: Box<Expr>,
+        /// The SQL/JSON path as a single-quoted string literal.
+        path: String,
+    },
+    /// ANSI SQL/JSON `JSON_OBJECT` construction, e.g.
+    /// `JSON_OBJECT('key' VALUE expr FORMAT JSON, 'k2' VALUE 1)`.
+    ///
+    /// Only parsed when [`Dialect::supports_sql_json_functions`] is enabled.
+    ///
+    /// [`Dialect::supports_sql_json_functions`]: crate::dialect::Dialect::supports_sql_json_functions
+    JsonObject {
+        /// The `KEY ... VALUE ...` pairs, in source order.
+        pairs: Vec<JsonObjectPair>,
+    },
 }
 
 impl Expr {
@@ -1156,6 +1206,36 @@ pub struct LambdaFunction {
 impl fmt::Display for LambdaFunction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} -> {}", self.params, self.body)
+    }
+}
+
+/// A single `KEY ... VALUE ...` pair in an [`Expr::JsonObject`] constructor.
+///
+/// Only parsed when
+/// [`Dialect::supports_sql_json_functions`](crate::dialect::Dialect::supports_sql_json_functions)
+/// is enabled.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub struct JsonObjectPair {
+    /// The object key; the parser only accepts string literals, stored
+    /// without the surrounding quotes.
+    pub key: String,
+    /// The value expression.
+    pub value: Expr,
+    /// Whether this pair is followed by the optional `FORMAT JSON` clause.
+    pub format_json: bool,
+}
+
+impl fmt::Display for JsonObjectPair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "'{}' VALUE {}{}",
+            value::escape_single_quote_string(&self.key),
+            self.value,
+            if self.format_json { " FORMAT JSON" } else { "" }
+        )
     }
 }
 
@@ -1825,6 +1905,37 @@ impl fmt::Display for Expr {
             }
             Expr::Prior(expr) => write!(f, "PRIOR {expr}"),
             Expr::Lambda(lambda) => write!(f, "{lambda}"),
+            Expr::JsonExists { doc, path } => write!(
+                f,
+                "JSON_EXISTS({}, '{}')",
+                doc,
+                value::escape_single_quote_string(path)
+            ),
+            Expr::JsonValue {
+                doc,
+                path,
+                returning,
+            } => {
+                write!(
+                    f,
+                    "JSON_VALUE({}, '{}'",
+                    doc,
+                    value::escape_single_quote_string(path)
+                )?;
+                if let Some(returning) = returning {
+                    write!(f, " RETURNING {returning}")?;
+                }
+                write!(f, ")")
+            }
+            Expr::JsonQuery { doc, path } => write!(
+                f,
+                "JSON_QUERY({}, '{}')",
+                doc,
+                value::escape_single_quote_string(path)
+            ),
+            Expr::JsonObject { pairs } => {
+                write!(f, "JSON_OBJECT({})", display_comma_separated(pairs))
+            }
         }
     }
 }

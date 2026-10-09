@@ -122,7 +122,6 @@ impl Dialect for ArroyoDialect {
         }
     }
 
-
     fn supports_filter_during_aggregation(&self) -> bool {
         true
     }
@@ -171,7 +170,6 @@ impl Dialect for ArroyoDialect {
         true
     }
 
-
     /// Return true if the dialect supports empty projections in SELECT statements
     ///
     /// Example
@@ -205,6 +203,12 @@ impl Dialect for ArroyoDialect {
 
     // arroyo-specific features
     fn supports_struct_literal(&self) -> bool {
+        true
+    }
+
+    /// Arroyo supports the ANSI SQL/JSON extraction functions
+    /// (`JSON_EXISTS`, `JSON_VALUE`, `JSON_QUERY`, `JSON_OBJECT`).
+    fn supports_sql_json_functions(&self) -> bool {
         true
     }
 }

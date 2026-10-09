@@ -451,6 +451,28 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Return true if the dialect supports the ANSI SQL/JSON functions
+    /// `JSON_EXISTS`, `JSON_VALUE`, `JSON_QUERY` and `JSON_OBJECT`.
+    ///
+    /// When enabled, calls to these functions are parsed into the dedicated
+    /// [`Expr::JsonExists`], [`Expr::JsonValue`], [`Expr::JsonQuery`] and
+    /// [`Expr::JsonObject`] variants, and any syntax outside of the supported
+    /// subset is rejected with a parse error instead of being parsed as a
+    /// generic function call.
+    ///
+    /// Example
+    /// ```sql
+    /// SELECT JSON_VALUE(payload, '$.name' RETURNING VARCHAR)
+    /// ```
+    ///
+    /// [`Expr::JsonExists`]: crate::ast::Expr::JsonExists
+    /// [`Expr::JsonValue`]: crate::ast::Expr::JsonValue
+    /// [`Expr::JsonQuery`]: crate::ast::Expr::JsonQuery
+    /// [`Expr::JsonObject`]: crate::ast::Expr::JsonObject
+    fn supports_sql_json_functions(&self) -> bool {
+        false
+    }
+
     /// Return true if the dialect supports empty projections in SELECT statements
     ///
     /// Example

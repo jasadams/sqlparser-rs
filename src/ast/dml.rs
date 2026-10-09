@@ -397,7 +397,11 @@ impl Display for CreateTable {
             write!(f, " CLUSTER BY {cluster_by}")?;
         }
         if let Some(arroyo_partitions) = &self.arroyo_partitions {
-            write!(f, " PARTITIONED BY ({})", display_comma_separated(arroyo_partitions))?;
+            write!(
+                f,
+                " PARTITIONED BY ({})",
+                display_comma_separated(arroyo_partitions)
+            )?;
         }
 
         if let Some(options) = self.options.as_ref() {

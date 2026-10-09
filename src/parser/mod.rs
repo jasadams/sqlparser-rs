@@ -273,6 +273,90 @@ enum ParserState {
     ConnectBy,
 }
 
+/// The ANSI SQL/JSON functions that the parser special-cases into dedicated
+/// [`Expr`](crate::ast::Expr) variants when a dialect enables them via
+/// [`Dialect::supports_sql_json_functions`](crate::dialect::Dialect::supports_sql_json_functions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqlJsonFunction {
+    JsonExists,
+    JsonValue,
+    JsonQuery,
+    JsonObject,
+}
+
+impl SqlJsonFunction {
+    /// Match an *unqualified, unquoted* function name against the SQL/JSON
+    /// function names (case-insensitively, like other function names).
+    fn from_object_name(name: &ObjectName) -> Option<Self> {
+        if name.0.len() != 1 {
+            return None;
+        }
+        let ident = name.0[0].as_ident()?;
+        if ident.quote_style.is_some() {
+            return None;
+        }
+        if ident.value.eq_ignore_ascii_case("JSON_EXISTS") {
+            Some(SqlJsonFunction::JsonExists)
+        } else if ident.value.eq_ignore_ascii_case("JSON_VALUE") {
+            Some(SqlJsonFunction::JsonValue)
+        } else if ident.value.eq_ignore_ascii_case("JSON_QUERY") {
+            Some(SqlJsonFunction::JsonQuery)
+        } else if ident.value.eq_ignore_ascii_case("JSON_OBJECT") {
+            Some(SqlJsonFunction::JsonObject)
+        } else {
+            None
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            SqlJsonFunction::JsonExists => "JSON_EXISTS",
+            SqlJsonFunction::JsonValue => "JSON_VALUE",
+            SqlJsonFunction::JsonQuery => "JSON_QUERY",
+            SqlJsonFunction::JsonObject => "JSON_OBJECT",
+        }
+    }
+
+    /// The supported syntax, used in rejection error messages. Derived from
+    /// the same tables that enforce the syntax (e.g.
+    /// [`JSON_VALUE_RETURNING_TYPES`]).
+    fn supported_syntax(self) -> String {
+        match self {
+            SqlJsonFunction::JsonExists => "JSON_EXISTS(<document>, <path>)".to_string(),
+            SqlJsonFunction::JsonValue => format!(
+                "JSON_VALUE(<document>, <path> [RETURNING {}])",
+                json_value_returning_type_names().join(" | ")
+            ),
+            SqlJsonFunction::JsonQuery => "JSON_QUERY(<document>, <path>)".to_string(),
+            SqlJsonFunction::JsonObject => {
+                "JSON_OBJECT([KEY] <string literal> VALUE <expression> [FORMAT JSON], ...)"
+                    .to_string()
+            }
+        }
+    }
+}
+
+/// The data types accepted by `JSON_VALUE(... RETURNING <type>)`.
+///
+/// This is the single source of truth for enforcement (see
+/// [`Parser::parse_json_value_returning`]), for the rejection error
+/// messages, and for the supported-syntax descriptions in
+/// [`SqlJsonFunction::supported_syntax`].
+const JSON_VALUE_RETURNING_TYPES: &[DataType] = &[
+    DataType::Varchar(None),
+    DataType::Boolean,
+    DataType::DoublePrecision,
+];
+
+/// The names of [`JSON_VALUE_RETURNING_TYPES`], e.g.
+/// `["VARCHAR", "BOOLEAN", "DOUBLE PRECISION"]`.
+fn json_value_returning_type_names() -> Vec<String> {
+    JSON_VALUE_RETURNING_TYPES
+        .iter()
+        .map(|data_type| data_type.to_string())
+        .collect()
+}
+
 /// A SQL Parser
 ///
 /// This struct is the main entry point for parsing SQL queries.
@@ -1814,7 +1898,235 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_function(&mut self, name: ObjectName) -> Result<Expr, ParserError> {
+        // ANSI SQL/JSON functions are special-cased into dedicated `Expr`
+        // variants when the dialect opts in (see
+        // `Dialect::supports_sql_json_functions`). This is checked before
+        // the generic function-call path so that unsupported syntax inside
+        // these calls is rejected with a precise error rather than being
+        // parsed as (or ignored by) a generic function call.
+        if self.dialect.supports_sql_json_functions() {
+            if let Some(function) = SqlJsonFunction::from_object_name(&name) {
+                return self.parse_sql_json_function(function);
+            }
+        }
         self.parse_function_call(name).map(Expr::Function)
+    }
+
+    /// Parse one of the ANSI SQL/JSON function calls enabled by
+    /// [`Dialect::supports_sql_json_functions`](crate::dialect::Dialect::supports_sql_json_functions).
+    ///
+    /// The opening `(` has not been consumed when this is called. Any
+    /// syntax outside of the supported subset produces a [`ParserError`]
+    /// naming the offending clause; unsupported syntax is never ignored.
+    fn parse_sql_json_function(&mut self, function: SqlJsonFunction) -> Result<Expr, ParserError> {
+        self.expect_token(&Token::LParen)?;
+        match function {
+            SqlJsonFunction::JsonExists => {
+                let (doc, path) = self.parse_sql_json_doc_and_path(function)?;
+                self.expect_sql_json_rparen(function)?;
+                Ok(Expr::JsonExists { doc, path })
+            }
+            SqlJsonFunction::JsonValue => {
+                let (doc, path) = self.parse_sql_json_doc_and_path(function)?;
+                let returning = self.parse_json_value_returning()?;
+                self.expect_sql_json_rparen(function)?;
+                Ok(Expr::JsonValue {
+                    doc,
+                    path,
+                    returning,
+                })
+            }
+            SqlJsonFunction::JsonQuery => {
+                let (doc, path) = self.parse_sql_json_doc_and_path(function)?;
+                self.expect_sql_json_rparen(function)?;
+                Ok(Expr::JsonQuery { doc, path })
+            }
+            SqlJsonFunction::JsonObject => self.parse_json_object(),
+        }
+    }
+
+    /// Parse the `<document>, '<path>'` argument list shared by
+    /// `JSON_EXISTS`, `JSON_VALUE` and `JSON_QUERY`.
+    fn parse_sql_json_doc_and_path(
+        &mut self,
+        function: SqlJsonFunction,
+    ) -> Result<(Box<Expr>, String), ParserError> {
+        let doc = Box::new(self.parse_expr()?);
+        self.expect_token(&Token::Comma)?;
+        let path = self.parse_sql_json_path(function)?;
+        Ok((doc, path))
+    }
+
+    /// Parse the SQL/JSON path argument, which must be a single-quoted
+    /// string literal.
+    fn parse_sql_json_path(&mut self, function: SqlJsonFunction) -> Result<String, ParserError> {
+        // Peek without consuming so that a rejection error can name every
+        // offending token up to the closing paren.
+        if !matches!(self.peek_token_ref().token, Token::SingleQuotedString(_)) {
+            return self.reject_sql_json_clause(
+                function,
+                "a single-quoted string literal path",
+                "the path must be a single-quoted string literal",
+            );
+        }
+        let token = self.next_token();
+        let Token::SingleQuotedString(path) = token.token else {
+            return self.expected("a path", token);
+        };
+        Ok(path)
+    }
+
+    /// Parse the optional `RETURNING <type>` clause of `JSON_VALUE`. Only
+    /// the types in `JSON_VALUE_RETURNING_TYPES` are accepted; anything
+    /// else (including `VARCHAR(n)` with an explicit length) is rejected.
+    fn parse_json_value_returning(&mut self) -> Result<Option<DataType>, ParserError> {
+        if !self.parse_keyword(Keyword::RETURNING) {
+            return Ok(None);
+        }
+        let data_type = self.parse_data_type()?;
+        if JSON_VALUE_RETURNING_TYPES.contains(&data_type) {
+            return Ok(Some(data_type));
+        }
+        let names = json_value_returning_type_names();
+        let supported = match names.as_slice() {
+            [] => String::new(),
+            [only] => only.clone(),
+            [init @ .., last] => format!("{}, and {}", init.join(", "), last),
+        };
+        parser_err!(
+            format!(
+                "Unsupported RETURNING type in JSON_VALUE: {data_type}; \
+                 supported types are {supported}"
+            ),
+            self.peek_token().span.start
+        )
+    }
+
+    /// Parse the arguments of `JSON_OBJECT`: either the empty constructor
+    /// `()`, or a comma-separated list of
+    /// `[KEY] '<key>' VALUE <expr> [FORMAT JSON]` pairs.
+    fn parse_json_object(&mut self) -> Result<Expr, ParserError> {
+        let mut pairs = Vec::new();
+        if !self.consume_token(&Token::RParen) {
+            loop {
+                pairs.push(self.parse_json_object_pair()?);
+                if !self.consume_token(&Token::Comma) {
+                    self.expect_sql_json_rparen(SqlJsonFunction::JsonObject)?;
+                    break;
+                }
+            }
+        }
+        Ok(Expr::JsonObject { pairs })
+    }
+
+    /// Parse a single `[KEY] '<key>' VALUE <expr> [FORMAT JSON]` pair of
+    /// `JSON_OBJECT`.
+    fn parse_json_object_pair(&mut self) -> Result<JsonObjectPair, ParserError> {
+        // The `KEY` keyword is optional, and the key must be a string
+        // literal. Peek at (without consuming) the key first so that
+        // rejection errors can name every offending token from here.
+        let key_token = if self.peek_keyword(Keyword::KEY) {
+            self.peek_nth_token(1)
+        } else {
+            self.peek_token()
+        };
+        let Token::SingleQuotedString(key) = key_token.token else {
+            return self.reject_sql_json_clause(
+                SqlJsonFunction::JsonObject,
+                "a string-literal key",
+                "JSON_OBJECT keys must be string literals",
+            );
+        };
+
+        // Consume the optional `KEY` keyword and the validated key literal.
+        let _ = self.parse_keyword(Keyword::KEY);
+        debug_assert!(matches!(
+            self.peek_token_ref().token,
+            Token::SingleQuotedString(_)
+        ));
+        self.advance_token();
+
+        self.expect_keyword_is(Keyword::VALUE)?;
+
+        // `DEFAULT ... ON ...` is rejected before it could be mistaken for
+        // a column named `default`.
+        if self.peek_keyword(Keyword::DEFAULT) {
+            return self.reject_sql_json_clause(
+                SqlJsonFunction::JsonObject,
+                "a value expression",
+                "the DEFAULT ... ON ... clause is not supported",
+            );
+        }
+        let value = self.parse_expr()?;
+        let format_json = self.parse_keywords(&[Keyword::FORMAT, Keyword::JSON]);
+        Ok(JsonObjectPair {
+            key,
+            value,
+            format_json,
+        })
+    }
+
+    /// Consume the closing `)` of a SQL/JSON function call, or fail with an
+    /// error naming the unsupported clause that follows the supported
+    /// arguments.
+    fn expect_sql_json_rparen(&mut self, function: SqlJsonFunction) -> Result<(), ParserError> {
+        if self.consume_token(&Token::RParen) {
+            Ok(())
+        } else {
+            self.reject_sql_json_clause(
+                function,
+                ")",
+                &format!("only {} is supported", function.supported_syntax()),
+            )
+        }
+    }
+
+    /// Fail with an error naming the upcoming tokens (the unsupported
+    /// clause up to the current function call's closing paren), or — when
+    /// there are none (e.g. end of input) — the missing `expected` token.
+    fn reject_sql_json_clause<T>(
+        &mut self,
+        function: SqlJsonFunction,
+        expected: &str,
+        detail: &str,
+    ) -> Result<T, ParserError> {
+        let clause = self.collect_sql_json_clause_tokens();
+        if clause.is_empty() {
+            return self.expected(expected, self.peek_token());
+        }
+        Err(ParserError::ParserError(format!(
+            "Unsupported clause in {}: `{}`; {}",
+            function.name(),
+            clause,
+            detail
+        )))
+    }
+
+    /// Render the upcoming tokens up to (but excluding) the closing paren
+    /// of the current SQL/JSON function call, so that errors can name the
+    /// full unsupported clause.
+    fn collect_sql_json_clause_tokens(&self) -> String {
+        let mut parts = Vec::new();
+        let mut depth = 0usize;
+        let mut index = self.index;
+        while let Some(token) = self.tokens.get(index) {
+            index += 1;
+            match token.token {
+                Token::EOF => break,
+                Token::Whitespace(_) => continue,
+                Token::LParen => {
+                    depth += 1;
+                    parts.push(token.token.to_string());
+                }
+                Token::RParen if depth == 0 => break,
+                Token::RParen => {
+                    depth -= 1;
+                    parts.push(token.token.to_string());
+                }
+                _ => parts.push(token.token.to_string()),
+            }
+        }
+        parts.join(" ")
     }
 
     fn parse_function_call(&mut self, name: ObjectName) -> Result<Function, ParserError> {

@@ -696,9 +696,15 @@ impl Spanned for TableConstraint {
                     .map(|i| i.span)
                     .chain(columns.iter().map(|i| i.span)),
             ),
-            TableConstraint::Watermark { column_name, watermark_expr } => {
-                union_spans(watermark_expr.iter().map(|e| e.span()).chain(core::iter::once(column_name.span)))
-            }
+            TableConstraint::Watermark {
+                column_name,
+                watermark_expr,
+            } => union_spans(
+                watermark_expr
+                    .iter()
+                    .map(|e| e.span())
+                    .chain(core::iter::once(column_name.span)),
+            ),
         }
     }
 }
@@ -1486,6 +1492,10 @@ impl Spanned for Expr {
             Expr::OuterJoin(expr) => expr.span(),
             Expr::Prior(expr) => expr.span(),
             Expr::Lambda(_) => Span::empty(),
+            Expr::JsonExists { doc, .. } => doc.span(),
+            Expr::JsonValue { doc, .. } => doc.span(),
+            Expr::JsonQuery { doc, .. } => doc.span(),
+            Expr::JsonObject { pairs } => union_spans(pairs.iter().map(|pair| pair.value.span())),
         }
     }
 }
