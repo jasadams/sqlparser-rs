@@ -2914,6 +2914,8 @@ pub struct JsonTableNamedColumn {
     pub r#type: DataType,
     /// The path to the column to be extracted. Must be a literal string.
     pub path: Value,
+    /// Serialize the selected JSON value rather than extracting a SQL scalar.
+    pub format_json: bool,
     /// true if the column is a boolean set to true if the given path exists
     pub exists: bool,
     /// The empty handling clause of the column
@@ -2926,9 +2928,10 @@ impl fmt::Display for JsonTableNamedColumn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{} {}{} PATH {}",
+            "{} {}{}{} PATH {}",
             self.name,
             self.r#type,
+            if self.format_json { " FORMAT JSON" } else { "" },
             if self.exists { " EXISTS" } else { "" },
             self.path
         )?;

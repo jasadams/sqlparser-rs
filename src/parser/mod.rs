@@ -12580,7 +12580,16 @@ impl<'a> Parser<'a> {
             return Ok(JsonTableColumn::ForOrdinality(name));
         }
         let r#type = self.parse_data_type()?;
+        let format_json = if self.parse_keyword(Keyword::FORMAT) {
+            self.expect_keyword_is(Keyword::JSON)?;
+            true
+        } else {
+            false
+        };
         let exists = self.parse_keyword(Keyword::EXISTS);
+        if format_json && exists {
+            return self.expected("PATH after FORMAT JSON", self.peek_token());
+        }
         self.expect_keyword_is(Keyword::PATH)?;
         let path = self.parse_value()?.value;
         let mut on_empty = None;
@@ -12597,6 +12606,7 @@ impl<'a> Parser<'a> {
             name,
             r#type,
             path,
+            format_json,
             exists,
             on_empty,
             on_error,

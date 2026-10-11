@@ -700,3 +700,66 @@ fn test_sql_json_function_name_matching() {
     let expr = assert_arroyo_expr_roundtrip("\"JSON_OBJECT\"(x, '$.a')");
     assert!(matches!(expr, Expr::Function(_)), "got {expr:?}");
 }
+
+#[test]
+fn test_json_table_typed_column_modes() {
+    use sqlparser::ast::{JsonTableColumn, TableFactor};
+    let sql = "SELECT patch.account, patch.details, patch.removed FROM JSON_TABLE(incoming.payload, '$.keyvalue()' COLUMNS(account VARCHAR PATH '$.key', details VARCHAR FORMAT JSON PATH '$.value', removed BOOLEAN EXISTS PATH '$.value ? (@ == null)')) AS patch";
+    let statement = assert_arroyo_stmt_roundtrip(sql);
+    let Statement::Query(query) = statement else {
+        panic!("expected query")
+    };
+    let SetExpr::Select(select) = *query.body else {
+        panic!("expected select")
+    };
+    let TableFactor::JsonTable {
+        json_expr, columns, ..
+    } = &select.from[0].relation
+    else {
+        panic!("expected JSON_TABLE")
+    };
+    assert_eq!(json_expr.to_string(), "incoming.payload");
+    let named: Vec<_> = columns
+        .iter()
+        .map(|column| {
+            let JsonTableColumn::Named(column) = column else {
+                panic!("expected named column")
+            };
+            column
+        })
+        .collect();
+    assert!(!named[0].format_json && !named[0].exists);
+    assert!(named[1].format_json && !named[1].exists);
+    assert!(!named[2].format_json && named[2].exists);
+    assert_eq!(named[2].r#type, DataType::Boolean);
+    assert_eq!(
+        named[2].path,
+        Value::SingleQuotedString("$.value ? (@ == null)".into())
+    );
+}
+
+#[test]
+fn test_json_table_preserves_optional_clauses_for_planner_rejection() {
+    use sqlparser::ast::{JsonTableColumn, JsonTableColumnErrorHandling, TableFactor};
+    let select = arroyo_dialects().verified_only_select("SELECT * FROM JSON_TABLE(payload, '$' COLUMNS(v VARCHAR FORMAT JSON PATH '$' NULL ON EMPTY ERROR ON ERROR, NESTED PATH '$.a' COLUMNS (x BOOLEAN EXISTS PATH '$'), n FOR ORDINALITY)) AS jt");
+    let TableFactor::JsonTable { columns, .. } = &select.from[0].relation else {
+        panic!("expected JSON_TABLE")
+    };
+    let JsonTableColumn::Named(column) = &columns[0] else {
+        panic!("expected named column")
+    };
+    assert!(column.format_json);
+    assert_eq!(column.on_empty, Some(JsonTableColumnErrorHandling::Null));
+    assert_eq!(column.on_error, Some(JsonTableColumnErrorHandling::Error));
+    assert!(matches!(columns[1], JsonTableColumn::Nested(_)));
+    assert!(matches!(columns[2], JsonTableColumn::ForOrdinality(_)));
+}
+
+#[test]
+fn test_json_table_rejects_conflicting_column_modes() {
+    assert_arroyo_parse_error("SELECT * FROM JSON_TABLE(payload, '$' COLUMNS(v VARCHAR FORMAT JSON EXISTS PATH '$')) AS jt", "PATH after FORMAT JSON");
+    assert_arroyo_parse_error(
+        "SELECT * FROM JSON_TABLE(payload, '$' COLUMNS(v VARCHAR FORMAT XML PATH '$')) AS jt",
+        "JSON",
+    );
+}

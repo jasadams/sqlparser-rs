@@ -3039,6 +3039,7 @@ fn parse_json_table() {
                     name: Ident::new("x"),
                     r#type: DataType::Int(None),
                     path: Value::SingleQuotedString("$".to_string()),
+                    format_json: false,
                     exists: false,
                     on_empty: Some(JsonTableColumnErrorHandling::Default(Value::SingleQuotedString("0".to_string()))),
                     on_error: Some(JsonTableColumnErrorHandling::Null),
