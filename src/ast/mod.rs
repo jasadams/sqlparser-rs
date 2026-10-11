@@ -762,6 +762,13 @@ pub enum Expr {
         pattern: Box<Expr>,
         escape_char: Option<String>,
     },
+    /// Standard `<expr> [NOT] LIKE_REGEX <pattern> [FLAG <flags>]` predicate.
+    LikeRegex {
+        negated: bool,
+        expr: Box<Expr>,
+        pattern: Box<Expr>,
+        flags: Option<Box<Expr>>,
+    },
     /// MySQL: RLIKE regex or REGEXP regex
     RLike {
         negated: bool,
@@ -1533,6 +1540,24 @@ impl fmt::Display for Expr {
                     pattern
                 ),
             },
+            Expr::LikeRegex {
+                negated,
+                expr,
+                pattern,
+                flags,
+            } => {
+                write!(
+                    f,
+                    "{} {}LIKE_REGEX {}",
+                    expr,
+                    if *negated { "NOT " } else { "" },
+                    pattern
+                )?;
+                if let Some(flags) = flags {
+                    write!(f, " FLAG {}", flags)?;
+                }
+                Ok(())
+            }
             Expr::RLike {
                 negated,
                 expr,

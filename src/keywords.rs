@@ -352,6 +352,7 @@ define_keywords!(
     FIRST,
     FIRST_VALUE,
     FIXEDSTRING,
+    FLAG,
     FLOAT,
     FLOAT32,
     FLOAT4,

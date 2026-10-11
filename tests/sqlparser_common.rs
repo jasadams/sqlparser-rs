@@ -31,9 +31,9 @@ use sqlparser::ast::SelectItem::UnnamedExpr;
 use sqlparser::ast::TableFactor::{Pivot, Unpivot};
 use sqlparser::ast::*;
 use sqlparser::dialect::{
-    AnsiDialect, BigQueryDialect, ClickHouseDialect, DatabricksDialect, Dialect, DuckDbDialect,
-    GenericDialect, HiveDialect, MsSqlDialect, MySqlDialect, PostgreSqlDialect, RedshiftSqlDialect,
-    SQLiteDialect, SnowflakeDialect,
+    AnsiDialect, ArroyoDialect, BigQueryDialect, ClickHouseDialect, DatabricksDialect, Dialect,
+    DuckDbDialect, GenericDialect, HiveDialect, MsSqlDialect, MySqlDialect, PostgreSqlDialect,
+    RedshiftSqlDialect, SQLiteDialect, SnowflakeDialect,
 };
 use sqlparser::keywords::{Keyword, ALL_KEYWORDS};
 use sqlparser::parser::{Parser, ParserError, ParserOptions};
@@ -14616,4 +14616,71 @@ fn parse_array_type_def_with_brackets() {
     let dialects = all_dialects_where(|d| d.supports_array_typedef_with_brackets());
     dialects.verified_stmt("SELECT x::INT[]");
     dialects.verified_stmt("SELECT STRING_TO_ARRAY('1,2,3', ',')::INT[3]");
+}
+
+#[test]
+fn parse_like_regex() {
+    let dialects = TestedDialects::new(vec![
+        Box::new(GenericDialect),
+        Box::new(AnsiDialect {}),
+        Box::new(ArroyoDialect {}),
+    ]);
+    for sql in [
+        "agent LIKE_REGEX '^node'",
+        "agent NOT LIKE_REGEX '^node'",
+        "NULL LIKE_REGEX '^node'",
+        "agent LIKE_REGEX NULL",
+        "agent LIKE_REGEX pattern",
+        "agent LIKE_REGEX '^node' FLAG 'i'",
+    ] {
+        let expr = dialects.verified_expr(sql);
+        let Expr::LikeRegex {
+            negated,
+            expr: value,
+            pattern,
+            flags,
+        } = expr
+        else {
+            panic!("expected LIKE_REGEX predicate for {sql}");
+        };
+        assert_eq!(negated, sql.contains(" NOT "));
+        assert_eq!(
+            value.to_string(),
+            if sql.starts_with("NULL") {
+                "NULL"
+            } else {
+                "agent"
+            }
+        );
+        assert_eq!(flags.is_some(), sql.contains(" FLAG "));
+        assert!(!pattern.to_string().is_empty());
+    }
+}
+
+#[test]
+fn parse_like_regex_precedence_and_escapes() {
+    let dialects = TestedDialects::new(vec![
+        Box::new(GenericDialect),
+        Box::new(AnsiDialect {}),
+        Box::new(ArroyoDialect {}),
+    ]);
+    let expr = dialects
+        .verified_expr("NOT agent LIKE_REGEX '^node' OR host NOT LIKE_REGEX '^google' AND enabled");
+    let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::Or,
+        right,
+    } = expr
+    else {
+        panic!("expected OR at the outer precedence");
+    };
+    assert_matches!(*left, Expr::UnaryOp { op: UnaryOperator::Not, expr } if matches!(*expr, Expr::LikeRegex { negated: false, .. }));
+    assert_matches!(*right, Expr::BinaryOp { left, op: BinaryOperator::And, .. } if matches!(*left, Expr::LikeRegex { negated: true, .. }));
+    let expr = dialects.verified_expr(r"host LIKE_REGEX '(^|\.)(google\.com|bing\.com)$'");
+    let Expr::LikeRegex { pattern, .. } = expr else {
+        unreachable!()
+    };
+    assert_matches!(*pattern, Expr::Value(value) if value.value == Value::SingleQuotedString(r"(^|\.)(google\.com|bing\.com)$".into()));
+    dialects.verified_expr("NOT (NULL LIKE_REGEX '^node')");
+    dialects.verified_expr("CASE WHEN host LIKE_REGEX '^google' THEN 'search' ELSE 'other' END");
 }

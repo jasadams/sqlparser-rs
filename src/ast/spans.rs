@@ -1355,6 +1355,15 @@ impl Spanned for Expr {
                 escape_char: _,
                 any: _,
             } => expr.span().union(&pattern.span()),
+            Expr::LikeRegex {
+                expr,
+                pattern,
+                flags,
+                ..
+            } => expr
+                .span()
+                .union(&pattern.span())
+                .union_opt(&flags.as_ref().map(|flags| flags.span())),
             Expr::RLike { .. } => Span::empty(),
             Expr::IsNormalized {
                 expr,

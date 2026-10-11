@@ -3647,6 +3647,7 @@ impl<'a> Parser<'a> {
                 | Keyword::BETWEEN
                 | Keyword::LIKE
                 | Keyword::ILIKE
+                | Keyword::LIKE_REGEX
                 | Keyword::SIMILAR
                 | Keyword::REGEXP
                 | Keyword::RLIKE => {
@@ -3667,6 +3668,22 @@ impl<'a> Parser<'a> {
                         self.parse_in(expr, negated)
                     } else if self.parse_keyword(Keyword::BETWEEN) {
                         self.parse_between(expr, negated)
+                    } else if self.parse_keyword(Keyword::LIKE_REGEX) {
+                        let pattern =
+                            self.parse_subexpr(self.dialect.prec_value(Precedence::Like))?;
+                        let flags = if self.parse_keyword(Keyword::FLAG) {
+                            Some(Box::new(
+                                self.parse_subexpr(self.dialect.prec_value(Precedence::Like))?,
+                            ))
+                        } else {
+                            None
+                        };
+                        Ok(Expr::LikeRegex {
+                            negated,
+                            expr: Box::new(expr),
+                            pattern: Box::new(pattern),
+                            flags,
+                        })
                     } else if self.parse_keyword(Keyword::LIKE) {
                         Ok(Expr::Like {
                             negated,
