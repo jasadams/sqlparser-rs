@@ -749,7 +749,7 @@ mod tests {
             .parse_statement()
             .unwrap();
 
-        s.visit(visitor);
+        assert!(s.visit(visitor).is_continue());
         s
     }
 
@@ -938,7 +938,7 @@ mod tests {
             .unwrap();
 
         let mut visitor = QuickVisitor {};
-        s.visit(&mut visitor);
+        assert!(s.visit(&mut visitor).is_continue());
     }
 }
 
@@ -977,7 +977,7 @@ mod visit_mut_tests {
             .parse_statement()
             .unwrap();
 
-        s.visit(visitor);
+        assert!(s.visit(visitor).is_continue());
         s
     }
 

@@ -657,6 +657,7 @@ fn test_duckdb_union_datatype() {
     let stmt = duckdb_and_generic().verified_stmt(sql);
     assert_eq!(
         Statement::CreateTable(CreateTable {
+            arroyo_partitions: None,
             or_replace: Default::default(),
             temporary: Default::default(),
             external: Default::default(),

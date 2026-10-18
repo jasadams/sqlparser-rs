@@ -5150,6 +5150,7 @@ fn parse_trigger_related_functions() {
     assert_eq!(
         create_table,
         CreateTable {
+            arroyo_partitions: None,
             or_replace: false,
             temporary: false,
             external: false,

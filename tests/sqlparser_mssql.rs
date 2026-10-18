@@ -1527,6 +1527,7 @@ fn parse_create_table_with_valid_options() {
         assert_eq!(
             ms_and_generic().verified_stmt(sql),
             Statement::CreateTable(CreateTable {
+                arroyo_partitions: None,
                 or_replace: false,
                 temporary: false,
                 external: false,
@@ -1701,6 +1702,7 @@ fn parse_create_table_with_identity_column() {
         assert_eq!(
             ms_and_generic().verified_stmt(sql),
             Statement::CreateTable(CreateTable {
+                arroyo_partitions: None,
                 or_replace: false,
                 temporary: false,
                 external: false,
